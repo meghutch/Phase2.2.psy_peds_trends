@@ -102,7 +102,7 @@ obfuscation =  FALSE
 raceAvailable = TRUE
 #raceAvailable = FALSE
 dateFormat <- "%d-%m-%y" #"%d-%b-%y"
-min_hosp_days <- 2
+min_hosp_days <- 0
 data_update_date <- "2021-06-05"
 time_period <-"months" #possible values: days, weeks, months
 ```
@@ -308,7 +308,7 @@ encounters <- encounters %>%
   # we then calculate the current time from the lag(max_date) and we will identify those within 24 hours as another encounter that should be grouped
   group_by(patient_id) %>%
   mutate(lag_date = lag(max_date),
-         time_diff = as.numeric(difftime(i_hsp_adm_dttm, lag_date, unit = "hours"))) %>%
+         time_diff = as.numeric(round(difftime(i_hsp_adm_dttm, lag_date, unit = "hours"), 2))) %>%
   # adding 100 to temporarily handle the NAs
   mutate(time_diff = ifelse(is.na(time_diff), 100, time_diff),
     i_encounter_group = ifelse(time_diff <= 24, lag(i_encounter_group), i_encounter_group),
@@ -677,7 +677,7 @@ input_data <- input_data %>%
   mutate(i_diagnosis_dttm = strptime(diagnosis_dttm, format="%m/%d/%Y") %>% as.POSIXct(),
          date = strptime(date, format="%Y-%m-%d") %>% as.POSIXct(),
          i_hsp_dsch_dttm = strptime(i_hsp_dsch_dttm, format="%Y-%m-%d") %>% as.POSIXct()) %>% 
-  dplyr::filter( date >= history_start_date & date <= history_end_date)
+  dplyr::filter(date >= history_start_date & date <= history_end_date)
 
 nrow(input_data)
 nrow(unique(data.frame(input_data$patient_num)))
