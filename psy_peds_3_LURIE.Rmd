@@ -159,14 +159,18 @@ if( raceAvailable == TRUE ){
 ### Read in Lurie files
 
 ```{r}
-#non_psych_inpt_counts <- read.csv(paste0(folder_4ce_files, "/non_psych_inpt_counts.csv"))
 non_psych_inpt_counts <- read.csv(paste0(folder_4ce_files, "/non_psych_admit_inpt_11_17.csv"))
-admit_all_codes <- read.csv(paste0(folder_4ce_files, "/psych_admit_inpt_primary_all_icds.csv"))
+admit_all_codes <- read.csv(paste0(folder_4ce_files, "/psych_admit_all_codes.csv"))
 admit_demog <- read.csv(paste0(folder_4ce_files, "/psych_admit_demog.csv"))
 admit_inpt_primary <- read.csv(paste0(folder_4ce_files, "/psych_admit_inpt_primary.csv"))
 ```
 
+Raw Data Counts
 
+```{r}
+nrow(unique(data.frame(admit_all_codes$patient_id)))
+nrow(unique(data.frame(admit_demog$patient_id)))
+```
 ### Read the ICD10 codes file
 
 The file containing the ICD10 psychiatric related codes is located in
@@ -177,6 +181,22 @@ icdCodes <- read.csv("public-data/pediatric_psychiatric_ICD10_codesV2.csv", head
    filter( flag %in% c("originalCodes", "FrenchSpecificCodes")) %>%
    dplyr::select( disorder_group, ICD10_Code, description )
 ```
+
+Old codes that Nelson used. These were updated to the ICD code list above in order to remove codes for accidental poisoning
+
+```{r}
+icdCodes_old <- read.csv("public-data/psychiatric_ICD-10_codes_adjusted.csv", header = TRUE, colClasses = "character")
+
+colnames(icdCodes_old) <- c("disorder_group", "ICD10_Code", "description")
+
+icdCodes_old <- icdCodes_old %>% 
+  mutate(ICD10_Code = gsub("ICD10:", "", ICD10_Code))
+
+excluded_codes <- icdCodes_old %>% anti_join(icdCodes)
+qc_check <- admit_all_codes %>% filter(icd_10_code %in% excluded_codes$ICD10_Code) 
+nrow(unique(data.frame(qc_check$patient_id)))
+```
+
 
 ## Data-management 
 
@@ -230,7 +250,13 @@ As noted by Nelson: "some patients will have two encounters back-to-back. These 
 **First we will combine all of the psych + non-psych data pulls**
 
 ```{r}
+# admit_demog$pysch = 1
+# non_psych_inpt_counts$pysch = 0
+
 admit_demog <- rbind(admit_demog, non_psych_inpt_counts)
+
+## appears to be no overlap?
+#View(admit_demog %>% distinct(patient_id, encounter_id, pysch) %>% group_by(psych) %>%  mutate(count = n()))
 ```
 
 
@@ -239,8 +265,13 @@ admit_demog <- rbind(admit_demog, non_psych_inpt_counts)
 admit_demog$i_hsp_adm_dttm <- strptime(admit_demog$hsp_adm_dttm, format="%m/%d/%Y %H:%M") %>% as.POSIXct()
 admit_demog$i_hsp_dsch_dttm <- strptime(admit_demog$hsp_dsch_dttm, format="%m/%d/%Y %H:%M") %>% as.POSIXct()
 
+# # filter ages
+# admit_demog <- admit_demog %>% filter(age_years > 10 & age_years < 18)  %>%
+#  filter(i_hsp_adm_dttm >= history_start_date & i_hsp_adm_dttm <= history_end_date)
+
 # unique encounter numbers should equal the row number (TRUE)
 nrow(unique(data.frame(admit_demog$encounter_id))) == nrow(admit_demog)
+nrow(admit_demog %>% distinct(patient_id, encounter_id))
 
 encounters <- admit_demog %>% 
   mutate(gender = if_else(gender == "Male", "male", "female")) %>% 
@@ -248,28 +279,57 @@ encounters <- admit_demog %>%
   arrange(patient_id, i_hsp_adm_dttm) %>% 
   filter(i_hsp_adm_dttm >= history_start_date & i_hsp_adm_dttm <= history_end_date) %>% 
   mutate(encounter_group = seq_along(encounter_id),
-         day_lag = round(difftime(i_hsp_adm_dttm, lag(i_hsp_dsch_dttm), unit = "hours")), 2) %>% 
-  data.frame() %>% 
+         day_lag = as.numeric(round(difftime(i_hsp_adm_dttm, lag(i_hsp_dsch_dttm), unit = "hours"), 2))) %>% 
+  data.frame() %>%
   # adding 100 to temporarily handle the NAs
   mutate(day_lag = ifelse(is.na(day_lag), 100, day_lag),
   # here we want to ensure that if subsequent encounters occurred within a day (24 hours), that we impute the initial encounter_group as per Nelson's suggestion
-         i_encounter_group = ifelse(day_lag <= 24, lag(encounter_group), encounter_group)) %>% 
+         i_encounter_group = ifelse(day_lag <= 24, lag(encounter_group), encounter_group),
+  consolidated = ifelse(day_lag <= 24, 1, 0))
+
+# this is suggesting that 408 need to get consolidated?
+table(encounters$consolidated)
+
+check_lag <- encounters %>% filter(!day_lag == 100)
+summary(check_lag$day_lag)
+less24 <- check_lag %>% filter(day_lag <= 24) #449
+summary(less24$day_lag)
+hist(less24$day_lag)
+
+
+encounters <- encounters %>%
   # in some cases there are more than two back-to-back encounters
   # to filter for these, first we will group by the patient_id and the new encounter group
-  group_by(patient_id, i_encounter_group) %>% 
+  group_by(patient_id, i_encounter_group) %>%
   # next, we will calculate the latest admission date of this encounter
-  mutate(max_date = max(i_hsp_adm_dttm)) %>% 
+  mutate(max_date = max(i_hsp_adm_dttm)) %>%
   ungroup() %>%
   # next, we group just by Patient, and we identify the latest max_date
-  # we then calculate the current time from the lag(max_date) and we will identify those within 24 hours as another encounter that should be grouped 
-  group_by(patient_id) %>% 
+  # we then calculate the current time from the lag(max_date) and we will identify those within 24 hours as another encounter that should be grouped
+  group_by(patient_id) %>%
   mutate(lag_date = lag(max_date),
-         time_diff = as.numeric(difftime(i_hsp_adm_dttm, lag_date, unit = "hours"))) %>% 
+         time_diff = as.numeric(difftime(i_hsp_adm_dttm, lag_date, unit = "hours"))) %>%
   # adding 100 to temporarily handle the NAs
   mutate(time_diff = ifelse(is.na(time_diff), 100, time_diff),
     i_encounter_group = ifelse(time_diff <= 24, lag(i_encounter_group), i_encounter_group),
+    consolidated2 = ifelse(time_diff <= 24, 1, 0),
   # recalculate the encounter sequence
-  encounter_num = dense_rank(i_encounter_group))
+  encounter_num = dense_rank(i_encounter_group)) %>% 
+  group_by(patient_id, encounter_num) 
+
+# this is suggesting that 408 need to get consolidated?
+table(encounters$consolidated2)
+
+check_lag <- encounters %>% filter(!time_diff == 100)
+summary(check_lag$time_diff)
+less24 <- check_lag %>% filter(time_diff <= 24) #397 patients/admissions said to need to be consolidated
+summary(less24$time_diff)
+hist(less24$time_diff)
+
+encounters <- encounters %>% 
+  slice(1L)
+
+nrow(encounters %>% distinct(patient_id, encounter_num))
 ```
 
 Check to see if we should have combined any additional encounters
@@ -284,7 +344,7 @@ test = encounters %>%
          time_diff = as.numeric(difftime(i_hsp_adm_dttm, lag_date, unit = "hours")),
          check = if_else(time_diff <= 24 & encounter_num != lag(encounter_num), 1, 0))
 
-#\View(test %>% filter(check == 1))
+#View(test %>% filter(check == 1))
 ```
 
 **Add number of hospitalizations and LOS of stay for each patient**
@@ -307,28 +367,30 @@ clinical_raw <- encounters %>%
   ungroup() %>% 
   select(patient_num, date, i_hsp_dsch_dttm, race, ethnicity, gender, age_years, encounter_num, n_hospitalisation, len_hospitalisation) %>% 
   distinct()
+
+nrow(clinical_raw %>% distinct(patient_num, encounter_num))
 ```
 
 ### Counting ICD10 mental health codes in the obs_raw table
 
 ```{r echo=TRUE}
 ### check that the ICD codes follow the regular expression [A-Z][0-9][0-9AB]\.?[0-9A-TV-Z]{0,4}
-codesToReview <- admit_all_codes %>% dplyr::filter(diagnosis_code == "DIAG-ICD10",
-                                           ! grepl( "[A-Z][0-9][0-9AB]\\.?[0-9A-TV-Z]{0,4}", diagnosis_code))
+codesToReview <- admit_all_codes %>% dplyr::filter(icd_10_code == "DIAG-ICD10",
+                                           ! grepl( "[A-Z][0-9][0-9AB]\\.?[0-9A-TV-Z]{0,4}", icd_10_code))
 print(codesToReview)
 
 ### Calculate how many of the mental codes are in the dataset
 mentalHealthCodes <- unique( admit_all_codes %>%
   dplyr::filter( #concept_type == "DIAG-ICD10", 
-                 diagnosis_code %in% icdCodes$ICD10_Code ) %>%
-  dplyr::mutate( diagnosis_code = as.character( diagnosis_code ), 
-                 concept_length = nchar( diagnosis_code ), 
-                 concept_check = ifelse( diagnosis_code == 4 | concept_length > 8, "Check", "OK")) %>%
-  dplyr::select( diagnosis_code, concept_length, concept_check) )
+                 icd_10_code %in% icdCodes$ICD10_Code ) %>%
+  dplyr::mutate( icd_10_code = as.character( icd_10_code ), 
+                 concept_length = nchar( icd_10_code ), 
+                 concept_check = ifelse( icd_10_code == 4 | concept_length > 8, "Check", "OK")) %>%
+  dplyr::select( icd_10_code, concept_length, concept_check) )
 
 summary(as.factor( mentalHealthCodes$concept_check ) )
 
-print( paste0("There are ", length(mentalHealthCodes$diagnosis_code), " ICD10 mental codes out of the total ",length(unique(icdCodes$ICD10_Code)), " in the dataset"))
+print( paste0("There are ", length(mentalHealthCodes$icd_10_code), " ICD10 mental codes out of the total ",length(unique(icdCodes$ICD10_Code)), " in the dataset"))
 ```
 
 ### Calculating age at hospitalization time
@@ -459,6 +521,8 @@ all_codes <- observation_table %>%
 
 ```{r}
 nrow(unique(data.frame(clinical_filtered$patient_num)))
+nrow(clinical_filtered %>% distinct(patient_num, encounter_num))
+
 
 input_data <- clinical_filtered %>% 
   mutate(age_years = floor(age_years)) %>% 
@@ -473,6 +537,7 @@ input_data <- clinical_filtered %>%
          "age" = age_years)
 
 nrow(unique(data.frame(input_data$patient_num)))
+nrow(input_data %>% distinct(patient_num, encounter_num))
 ```
 
 ```{r eval=FALSE, include=FALSE}
@@ -548,6 +613,30 @@ stopifnot(nrow(distinct(all_codes_ado, patient_num, n_hospitalisation)) == nrow(
 stopifnot(nrow(distinct(all_codes_ado, patient_num, days_since_admission)) == nrow(distinct(observation_table_ado, patient_num, days_since_admission)))
 ```
 
+Are there any patients in the admit_demog df who do not have any icd codes listed?
+  
+Note: this looks fine
+```{r}
+admit_demog <- read.csv(paste0(folder_4ce_files, "/psych_admit_demog.csv"))
+
+# list of all patients who should have had at least 1 psych diagnosis
+psych_ids <- admit_demog %>% 
+  distinct(patient_id)
+nrow(psych_ids)
+
+# evaluate whether there are patients in admit_all_codes file that were not listed in the admit_demog file
+admit_demog_ids <- admit_all_codes %>% 
+  distinct(patient_id) %>% 
+  filter(!patient_id %in% psych_ids$patient_id)
+nrow(admit_demog_ids)
+
+# evaluate whether there are patients in the admit_demog file that do not have diagnosis codes
+psych_id_check <- psych_ids %>% 
+  distinct(patient_id) %>% 
+  filter(!patient_id %in% admit_all_codes$patient_id)
+nrow(psych_id_check)
+```
+
 ### Add the psychiatric/mental health ICD code description and filter
 
 ```{r message=FALSE, warning=FALSE}
@@ -572,13 +661,15 @@ colnames(icdCategory) <- c("icd_code_letter", "icd_description_category")
 # begin processing the ICD codes for the patients
 all_codes_desc <- admit_all_codes %>% 
    rename("patient_num" = patient_id, 
-          "concept_code" = diagnosis_code) %>% 
+          "concept_code" = icd_10_code) %>% 
   left_join(., icdCodes, by = c("concept_code" = "ICD10_Code")) %>% 
   mutate(icd_code_category = ifelse(concept_code %in% icdCodes$ICD10_Code, 
                                "psy", 
                                "others"))
 
+nrow(input_data)
 nrow(unique(data.frame(input_data$patient_num)))
+nrow(input_data %>% distinct(patient_num, encounter_num))
 
 # Join mental health codes to the patient_number
 input_data <- input_data %>% 
@@ -586,26 +677,43 @@ input_data <- input_data %>%
   mutate(i_diagnosis_dttm = strptime(diagnosis_dttm, format="%m/%d/%Y") %>% as.POSIXct(),
          date = strptime(date, format="%Y-%m-%d") %>% as.POSIXct(),
          i_hsp_dsch_dttm = strptime(i_hsp_dsch_dttm, format="%Y-%m-%d") %>% as.POSIXct()) %>% 
-  dplyr::filter( #diagnosis_code_source == "ICD-10-CM", 
-                 #in_hospital == 1,
-                 age > 10 & age < 18,
-                 date >= history_start_date & date <= history_end_date)
+  dplyr::filter( date >= history_start_date & date <= history_end_date)
+
+nrow(input_data)
+nrow(unique(data.frame(input_data$patient_num)))
+nrow(input_data %>% distinct(patient_num, encounter_num))
 
 # we will temporarily split the data frame between our psych patients with ICD codes and our non-pysch without, due to the filtering function automatically dropping rows with missing ICD codes
 # of note: these are just some patients who have an ICD code - could be some non-psych codes as the original query including some icd codes for poisoning that ended up being excluded
 keep_psych <- input_data %>% 
+  group_by(patient_num, encounter_num) %>% 
   filter(i_diagnosis_dttm >= date & i_diagnosis_dttm <= i_hsp_dsch_dttm) %>% 
   dplyr::select( patient_num, encounter_num, sex, age, race, concept_code, n_hospitalisation, len_hospitalisation, 
                  date, weeks, month, year, period, time_p, disorder_group, description, icd_code_category) 
 
 keep_non_psych = input_data %>% 
+  group_by(patient_num, encounter_num) %>% 
   filter(is.na(i_diagnosis_dttm)) %>% 
   dplyr::select( patient_num, encounter_num, sex, age, race, concept_code, n_hospitalisation, len_hospitalisation, 
                  date, weeks, month, year, period, time_p, disorder_group, description, icd_code_category) 
-  
-input_data <- rbind(keep_psych, keep_non_psych)
 
+# keep non_psych whose dx date did not occur during the admission
+# but correct the diagnosis data to match the non_psych group
+keep_non_psych_v2 = input_data %>% 
+  group_by(patient_num, encounter_num) %>% 
+  filter(i_diagnosis_dttm < date | i_diagnosis_dttm >= i_hsp_dsch_dttm) %>% 
+  dplyr::select( patient_num, encounter_num, sex, age, race, concept_code, n_hospitalisation, len_hospitalisation, 
+                 date, weeks, month, year, period, time_p, disorder_group, description, icd_code_category) %>% 
+  mutate(concept_code = NA,
+         disorder_group = NA,
+         description = NA, 
+         icd_code_category = NA)
+
+input_data <- rbind(keep_psych, keep_non_psych, keep_non_psych_v2)
+
+nrow(input_data)
 nrow(unique(data.frame(input_data$patient_num)))
+nrow(input_data %>% distinct(patient_num, encounter_num))
 
 all_codes_desc <- input_data %>% 
   mutate( icd_code_letter = ifelse(substr(concept_code, 1, 1) %in% c("D", "H"), substr(concept_code, 1, 2), substr(concept_code, 1, 1) ))
@@ -614,11 +722,27 @@ all_codes_desc <- left_join( all_codes_desc, icdCategory) %>%
   mutate( icd_description_category = replace_na( ifelse( concept_code %in% icdCodes$ICD10_Code, "Psy", icd_description_category), "Others"),
           icd_code_category = ifelse(is.na(icd_code_category), "others", icd_code_category))
 
+nrow(all_codes_desc %>% distinct(patient_num, encounter_num))
 
 all_codes_psy <- all_codes_desc %>% 
   filter(concept_code %in% icdCodes$ICD10_Code)
 
 nrow(unique(data.frame(all_codes_psy$patient_num)))
+nrow(all_codes_psy %>% distinct(patient_num, encounter_num))
+# View(all_codes_psy %>% 
+#        ungroup() %>% 
+#        distinct(patient_num, encounter_num, time_p, period) %>% 
+#        group_by(period) %>% 
+#        mutate(count = n_distinct(patient_num, encounter_num)) %>% 
+#        distinct(period, count))
+
+## how many weeks in 'during' vs 'before' pandemic (15 for both)
+# View(all_codes_psy %>% 
+#        ungroup() %>% 
+#        distinct(month, period) %>%
+#        group_by(period) %>% 
+#        mutate(count = n_distinct(month)))
+
 
 #all_codes_desc$i_date <- strptime(all_codes_desc$date, format="%Y-%m-%d") %>% as.POSIXct()
 
@@ -636,6 +760,8 @@ before_v_after <- all_codes_desc %>%
   group_by(period, icd_code_category) %>% 
   mutate(count = n_distinct(patient_num, encounter_num)) %>% 
   distinct(period, icd_code_category, count)
+
+before_v_after
 ```
 
 
@@ -757,6 +883,43 @@ p1 <- ggplot(all_codes_desc %>%
                # slice(1) %>% 
                group_by(month, period, icd_code_category) %>% 
                arrange(month) %>% 
+               mutate(month = as.character(month)) %>%
+               filter(!month == "2020-03-01") %>%
+               mutate(psych_any_count = n_distinct(patient_num, encounter_num),
+                      month = as.character(month), 
+                      month = ifelse(month == "2020-03-01" & period == "during_pandemic", "2020-03-15", month),
+                      month = as.Date(month)) %>% 
+               distinct(month, icd_code_category, psych_any_count, period) %>% 
+               pivot_wider(names_from = icd_code_category, values_from = psych_any_count) %>% 
+               mutate(sum = psy + others,
+                      perc_psyc = psy/sum),
+       aes(x = month, y = perc_psyc, fill = period)) + 
+  geom_bar(stat="identity", width = 20) + 
+  geom_smooth(method = "lm", se = TRUE, aes(color = period)) + 
+  scale_color_brewer(palette="Dark2", direction = -1) +
+  scale_fill_brewer(palette = "Dark2", direction = -1) + 
+  ylab("Any Psychiatric Disease") + 
+  xlab("") + 
+  scale_x_date(date_labels = "%b-%y", date_breaks = "1 month", expand = c(0,0)) + 
+  #facet_wrap(~icd_code_category) +
+  theme_bw() + 
+  theme(legend.title = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+p1
+
+p1 <- ggplot(all_codes_desc %>%
+               #filter(icd_code_category == "psy") %>% 
+               # first, for each month, we will modify the data, so that if a patient has a psych AND non-psych admission in the first month, we will only count their psych admission
+               # group_by(month) %>% 
+               # mutate(check = if_else(icd_code_category == "psy", 1, 0)) %>% 
+               # group_by(patient_num, month) %>% 
+               # filter(check == max(check)) %>% 
+               # slice(1) %>% 
+               group_by(month, period, icd_code_category) %>% 
+               arrange(month) %>% 
+               # mutate(month = as.character(month)) %>% 
+               # filter(!month == "2020-03-01") %>% 
                mutate(psych_any_count = n_distinct(patient_num, encounter_num),
                       month = as.character(month), 
                       month = ifelse(month == "2020-03-01" & period == "during_pandemic", "2020-03-15", month),
@@ -808,6 +971,7 @@ summary(during$perc_psyc)
 
 # don't divide by month 
 
+#unique patient and encounter by month
 test <- all_codes_desc %>%
                #filter(icd_code_category == "psy") %>% 
                # first, for each month, we will modify the data, so that if a patient has a psych AND non-psych admission in the first month, we will only count their psych admission
@@ -894,7 +1058,7 @@ As output we will generate a table with: the number of observations per code, nu
 ```{r}
 #filter the whole dataset to only mental codes
 mental_codes_qc <- all_codes_desc %>% 
-  filter( concept_code %in% mentalHealthCodes$diagnosis_code)
+  filter( concept_code %in% mentalHealthCodes$icd_10_code)
 
 mental_codes_qc_output <- mental_codes_qc %>%
   group_by( concept_code ) %>%
@@ -920,7 +1084,7 @@ mental_codes_qc_output[1:10, ]
 
 ## Admission
 
-First calculation: total number of patients, matching the inclusion criteria, admitted on one day (without filtering by any disease subtype). Summed up over one week, or one month depending on the time unit chosen. Not filtered on qge. 
+First calculation: total number of patients, matching the inclusion criteria, admitted on one day (without filtering by any disease subtype). Summed up over one week, or one month depending on the time unit chosen. Not filtered on age. 
 
 ```{r}
 admission_plot_count <- function(df,
