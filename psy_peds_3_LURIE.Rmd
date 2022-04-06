@@ -22,7 +22,11 @@ paket <- function(pak){
   sapply(pak, library, character.only = TRUE)
 }
 
-listOfPackages <- c("tidyverse", "RColorBrewer", "knitr", "kableExtra", "tsModel", "gridExtra", "dplyr")
+#listOfPackages <- c("tidyverse", "RColorBrewer", "knitr", "kableExtra", "tsModel", "gridExtra", "dplyr")
+#paket(listOfPackages)
+
+# trying to remove kableExtra to run w/o docker
+listOfPackages <- c("tidyverse", "RColorBrewer", "knitr", "tsModel", "gridExtra", "dplyr")
 paket(listOfPackages)
 ```
 
@@ -31,6 +35,13 @@ paket(listOfPackages)
 ```{r}
 sessionInfo()
 ```
+
+### Set working directory
+
+```{r}
+#setwd("~/projects/nu4ce/4ceData_files/Phase2.2.psy_peds_trends")
+```
+
 
 ### Plots aesthetics information
 
@@ -109,11 +120,11 @@ time_period <-"months" #possible values: days, weeks, months
 
 ```{r}
 # cut-off dates used in the analysis, these should not be changed
-history_start_date <- as.Date("2019-01-01")
-history_end_date <- as.Date("2021-05-31")
+#start_date_plots <- as.Date("2019-01-01")
+#history_end_date <- as.Date("2021-05-31")
 pandemic_start_date <- as.Date("2020-03-15")
-start_date_plots <- as.Date("2019-01-15")
-end_date_plots <- as.Date("2021-05-01")
+start_date_plots <- as.Date("2018-12-01")
+end_date_plots <- as.Date("2021-07-01")
 ```
 
 ## Data loading
@@ -267,7 +278,7 @@ admit_demog$i_hsp_dsch_dttm <- strptime(admit_demog$hsp_dsch_dttm, format="%m/%d
 
 # # filter ages
 # admit_demog <- admit_demog %>% filter(age_years > 10 & age_years < 18)  %>%
-#  filter(i_hsp_adm_dttm >= history_start_date & i_hsp_adm_dttm <= history_end_date)
+#  filter(i_hsp_adm_dttm >= start_date_plots & i_hsp_adm_dttm <= end_date_plots)
 
 # unique encounter numbers should equal the row number (TRUE)
 nrow(unique(data.frame(admit_demog$encounter_id))) == nrow(admit_demog)
@@ -277,7 +288,7 @@ encounters <- admit_demog %>%
   mutate(gender = if_else(gender == "Male", "male", "female")) %>% 
   group_by(patient_id) %>% 
   arrange(patient_id, i_hsp_adm_dttm) %>% 
-  filter(i_hsp_adm_dttm >= history_start_date & i_hsp_adm_dttm <= history_end_date) %>% 
+  filter(i_hsp_adm_dttm >= start_date_plots & i_hsp_adm_dttm <= end_date_plots) %>% 
   mutate(encounter_group = seq_along(encounter_id),
          day_lag = as.numeric(round(difftime(i_hsp_adm_dttm, lag(i_hsp_dsch_dttm), unit = "hours"), 2))) %>% 
   data.frame() %>%
@@ -446,7 +457,7 @@ if( time_period == "weeks"){
 clinical_raw$date <- strptime(clinical_raw$date, format="%Y-%m-%d") %>% as.POSIXct()
 
 # create list of calendar_dates
-date_ids <- seq(as.Date("2019-01-01"), as.Date(history_end_date), 
+date_ids <- seq(as.Date("2019-01-01"), as.Date(end_date_plots), 
                 by= "day") %>% 
   data.frame() %>% 
   rename('calendar_date' = '.')
@@ -526,7 +537,7 @@ nrow(clinical_filtered %>% distinct(patient_num, encounter_num))
 
 input_data <- clinical_filtered %>% 
   mutate(age_years = floor(age_years)) %>% 
-  filter(date >= history_start_date & date <= history_end_date,
+  filter(date >= start_date_plots & date <= end_date_plots,
          age_years > 10 & age_years < 18) %>% 
   group_by(patient_num, encounter_num) %>% 
   arrange(date) %>% 
@@ -556,7 +567,7 @@ qc_check <- admit_all_codes %>%
                  #in_hospital == 1,
                  i_diagnosis_dttm >= date & i_diagnosis_dttm <= i_hsp_dsch_dttm,
                  age > 10 & age < 18,
-                 date >= history_start_date & date <= history_end_date,
+                 date >= start_date_plots & date <= end_date_plots,
                  ) %>%
   dplyr::select( patient_num, encounter_num, sex, age, race, concept_code, n_hospitalisation, len_hospitalisation, 
                  date, weeks, month, year, period, time_p, disorder_group, description, icd_code_category) 
@@ -677,7 +688,7 @@ input_data <- input_data %>%
   mutate(i_diagnosis_dttm = strptime(diagnosis_dttm, format="%m/%d/%Y") %>% as.POSIXct(),
          date = strptime(date, format="%Y-%m-%d") %>% as.POSIXct(),
          i_hsp_dsch_dttm = strptime(i_hsp_dsch_dttm, format="%Y-%m-%d") %>% as.POSIXct()) %>% 
-  dplyr::filter(date >= history_start_date & date <= history_end_date)
+  dplyr::filter(date >= start_date_plots & date <= end_date_plots)
 
 nrow(input_data)
 nrow(unique(data.frame(input_data$patient_num)))
@@ -1011,7 +1022,7 @@ non_psych_inpt_counts$date <- strptime(non_psych_inpt_counts$hsp_adm_dttm, forma
 non_psych_inpt_counts <- non_psych_inpt_counts %>% 
   filter(len_hospitalisation >= min_hosp_days) %>% 
   filter(age_years > 10 & age_years < 18,
-         date >= history_start_date & date <= history_end_date) %>% 
+         date >= start_date_plots & date <= end_date_plots) %>% 
   dplyr::mutate(#date = as.Date( calendar_date, format = dateFormat ),
                  weeks = as.Date(cut( date, breaks = "week")),
                  month = as.Date(cut( date, breaks = "month")),
@@ -1119,9 +1130,6 @@ new_hospitalizations <- all_codes_desc %>%
                                0.5)) %>% 
   ungroup()
 
-start_date_plots <- as.Date("2019-01-01")
-end_date_plots <- as.Date("2021-05-24")
-
 nh <- admission_plot_count(df = new_hospitalizations, 
                      x = "time_p",
                      y = "count", 
@@ -1144,9 +1152,6 @@ new_hospitalizations_ado <- all_codes_desc %>%
                                n_distinct(patient_num), 
                                0.5)) %>% 
   ungroup()
-
-start_date_plots <- as.Date("2019-01-01")
-end_date_plots <- as.Date("2021-05-24")
 
 nh_ado <- admission_plot_count(df = new_hospitalizations_ado, 
                      x = "time_p",
@@ -2022,9 +2027,17 @@ table1 %>%
 # Save the output in a RData file. 
 ```{r}
 length_hospitalisation_values <- all_codes_psy %>% 
-  dplyr::distinct( patient_num, n_hospitalisation, len_hospitalisation, period ) %>%
+  dplyr::distinct( patient_num, encounter_num, n_hospitalisation, len_hospitalisation, period ) %>%
   dplyr::mutate( siteid = site ) %>%
   dplyr::select( len_hospitalisation, siteid, period )
+
+# de-identify to share with alba/arnaud
+to_share <- length_hospitalisation_values %>% 
+  ungroup() %>% 
+  mutate(siteid = "Lurie") %>% 
+  select(len_hospitalisation, siteid, period)
+
+write.csv(to_share, "../2022.04.06_Lurie_Output/Lurie_los.csv", row.names = FALSE)
 
 # add the site id as column for each of the output data frames
 count_icd$siteid = site 
@@ -2051,7 +2064,7 @@ save( count_icd,
       patients_hospitalized_agg_sex_perc,
       table1,
       #length_hospitalisation_values,
-      file = paste0("output/peds_psy_aggResults_", site, ".RData"))
+      file = paste0("../2022.04.06_Lurie_Output/peds_psy_aggResults_", site, ".RData"))
 
 rm(length_hospitalisation_values)
 ```
